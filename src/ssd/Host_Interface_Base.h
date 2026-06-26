@@ -127,6 +127,9 @@ namespace SSD_Components
 		void Attach_to_device(Host_Components::PCIe_Switch* pcie_switch);
 		LHA_type Get_max_logical_sector_address();
 		unsigned int Get_no_of_LHAs_in_an_NVM_write_unit();
+		// Adapter accessor: exposes the per-stream transaction-latency breakdown
+		// (execution / transfer / waiting time getters) to the result collector.
+		Input_Stream_Manager_Base* Get_input_stream_manager() { return input_stream_manager; }
 	protected:
 		HostInterface_Types type;
 		LHA_type max_logical_sector_address;
