@@ -2,6 +2,7 @@
 #include <stdexcept>
 #include <ctime>
 #include "SSD_Device.h"
+#include "../ssd/Host_Interface_Direct.h"   // MQSim 本体的直注入(direct)Host 接口
 #include "../ssd/ONFI_Channel_Base.h"
 #include "../ssd/Flash_Block_Manager.h"
 #include "../ssd/Data_Cache_Manager_Flash_Advanced.h"
@@ -228,6 +229,7 @@ SSD_Device::SSD_Device(Device_Parameter_Set *parameters, std::vector<IO_Flow_Par
 				}
 				break;
 			}
+			case HostInterface_Types::DIRECT:   // 直注入:与 NVMe 相同的按 flow 资源分配
 			case HostInterface_Types::NVME:
 			{
 				stream_count = (unsigned int)io_flows->size();
@@ -262,7 +264,7 @@ SSD_Device::SSD_Device(Device_Parameter_Set *parameters, std::vector<IO_Flow_Par
 			}
 		}
 
-		Utils::Logical_Address_Partitioning_Unit::Allocate_logical_address_for_flows(parameters->HostInterface_Type, (unsigned int)io_flows->size(),
+		Utils::Logical_Address_Partitioning_Unit::Allocate_logical_address_for_flows(parameters->HostInterface_Type == HostInterface_Types::DIRECT ? HostInterface_Types::NVME : parameters->HostInterface_Type, (unsigned int)io_flows->size(),
 																					 parameters->Flash_Channel_Count, parameters->Chip_No_Per_Channel, parameters->Flash_Parameters.Die_No_Per_Chip, parameters->Flash_Parameters.Plane_No_Per_Die,
 																					 flow_channel_id_assignments, flow_chip_id_assignments, flow_die_id_assignments, flow_plane_id_assignments,
 																					 parameters->Flash_Parameters.Block_No_Per_Plane, parameters->Flash_Parameters.Page_No_Per_Block,
@@ -359,6 +361,12 @@ SSD_Device::SSD_Device(Device_Parameter_Set *parameters, std::vector<IO_Flow_Par
 			device->Host_interface = new SSD_Components::Host_Interface_SATA(device->ID() + ".HostInterface",
 																			 parameters->IO_Queue_Depth, Utils::Logical_Address_Partitioning_Unit::Get_total_device_lha_count(), parameters->Flash_Parameters.Page_Capacity / SECTOR_SIZE_IN_BYTE, dcm);
 
+			break;
+		case HostInterface_Types::DIRECT:   // 直注入(MQSim 本体 Host_Interface_Direct,不建 Host_System)
+			device->Host_interface = new SSD_Components::Host_Interface_Direct(device->ID() + ".HostInterface",
+																			 Utils::Logical_Address_Partitioning_Unit::Get_total_device_lha_count(),
+																			 (unsigned int)io_flows->size(), parameters->IO_Queue_Depth,
+																			 parameters->Flash_Parameters.Page_Capacity / SECTOR_SIZE_IN_BYTE, dcm);
 			break;
 		default:
 			break;

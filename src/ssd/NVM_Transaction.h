@@ -17,7 +17,7 @@ namespace SSD_Components
 	{
 	public:
 		NVM_Transaction(stream_id_type stream_id, Transaction_Source_Type source, Transaction_Type type, User_Request* user_request, IO_Flow_Priority_Class::Priority priority_class) :
-			Stream_id(stream_id), Source(source), Type(type), UserIORequest(user_request), Priority_class(priority_class), Issue_time(Simulator->Time()), STAT_execution_time(INVALID_TIME), STAT_transfer_time(INVALID_TIME) {}
+			Stream_id(stream_id), Source(source), Type(type), UserIORequest(user_request), Priority_class(priority_class), Issue_time(Simulator->Time()), STAT_execution_time(INVALID_TIME), STAT_transfer_time(INVALID_TIME), STAT_array_start_time(INVALID_TIME), STAT_dataout_transfer_time(0) {}
 		stream_id_type Stream_id;
 		Transaction_Source_Type Source;
 		Transaction_Type Type;
@@ -29,6 +29,15 @@ namespace SSD_Components
 		/* Used to calculate service time and transfer time for a normal read/program operation used to respond to the host IORequests.
 		In other words, these variables are not important if FlashTransactions is used for garbage collection.*/
 		sim_time_type STAT_execution_time, STAT_transfer_time;
+		// On-chip instrumentation: wall-clock time the flash array operation (tR /
+		// tPROG / tERS) actually begins -- set by the ONFI PHY once the command/data
+		// transfer completes. Lets timelines place the array segment exactly instead
+		// of assuming it starts at Issue_time. INVALID_TIME until the array starts.
+		sim_time_type STAT_array_start_time;
+		// On-chip instrumentation: the read data-out portion of STAT_transfer_time
+		// (channel-busy time AFTER the array op). transfer = command/addr (before the
+		// array) + this. 0 for writes/erases (their whole transfer precedes the array).
+		sim_time_type STAT_dataout_transfer_time;
 	};
 }
 

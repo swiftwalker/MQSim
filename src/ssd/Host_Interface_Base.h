@@ -28,6 +28,12 @@ namespace SSD_Components
 
 	class Data_Cache_Manager_Base;
 	class Host_Interface_Base;
+	class NVM_Transaction;
+
+	// 逐事务日志钩子(direct 注入用)。stock MQSim 里为 null(零开销、无外部依赖 ->
+	// 本体仍可独立编译/运行)。上层(pybind adapter)装上收集器,捕获每笔已服务事务的
+	// 时序(issue / execution / transfer / finish)与物理地址,供时间线使用。
+	extern void (*Direct_TxLog_Hook)(NVM_Transaction*);
 
 	class Input_Stream_Base
 	{
@@ -127,6 +133,9 @@ namespace SSD_Components
 		void Attach_to_device(Host_Components::PCIe_Switch* pcie_switch);
 		LHA_type Get_max_logical_sector_address();
 		unsigned int Get_no_of_LHAs_in_an_NVM_write_unit();
+		// Adapter accessor: exposes the per-stream transaction-latency breakdown
+		// (execution / transfer / waiting time getters) to the result collector.
+		Input_Stream_Manager_Base* Get_input_stream_manager() { return input_stream_manager; }
 	protected:
 		HostInterface_Types type;
 		LHA_type max_logical_sector_address;

@@ -348,7 +348,7 @@ namespace SSD_Components {
 				//DEBUG2("Chip " << targetChip->ChannelID << ", " << targetChip->ChipID << ", " << dieBKE->ActiveTransactions.front()->Address.DieID << ": READ_CMD_ADDR_TRANSFERRED ")
 				targetChip->EndCMDXfer(dieBKE->ActiveCommand);
 				for (auto tr : dieBKE->ActiveTransactions) {
-					tr->STAT_execution_time = dieBKE->Expected_finish_time - Simulator->Time();
+					tr->STAT_execution_time = dieBKE->Expected_finish_time - Simulator->Time(); tr->STAT_array_start_time = Simulator->Time();  // on-chip: stamp exact array-op start
 				}
 				chipBKE->OngoingDieCMDTransfers.pop();
 				chipBKE->No_of_active_dies++;
@@ -364,7 +364,7 @@ namespace SSD_Components {
 				//DEBUG2("Chip " << targetChip->ChannelID << ", " << targetChip->ChipID << ", " << dieBKE->ActiveTransactions.front()->Address.DieID << ": ERASE_SETUP_COMPLETED ")
 				targetChip->EndCMDXfer(dieBKE->ActiveCommand);
 				for (auto &tr : dieBKE->ActiveTransactions) {
-					tr->STAT_execution_time = dieBKE->Expected_finish_time - Simulator->Time();
+					tr->STAT_execution_time = dieBKE->Expected_finish_time - Simulator->Time(); tr->STAT_array_start_time = Simulator->Time();  // on-chip: stamp exact array-op start
 				}
 				chipBKE->OngoingDieCMDTransfers.pop();
 				chipBKE->No_of_active_dies++;
@@ -381,7 +381,7 @@ namespace SSD_Components {
 				//DEBUG2("Chip " << targetChip->ChannelID << ", " << targetChip->ChipID << ", " << dieBKE->ActiveTransactions.front()->Address.DieID <<  ": PROGRAM_CMD_ADDR_DATA_TRANSFERRED " )
 				targetChip->EndCMDDataInXfer(dieBKE->ActiveCommand);
 				for (auto &tr : dieBKE->ActiveTransactions) {
-					tr->STAT_execution_time = dieBKE->Expected_finish_time - Simulator->Time();
+					tr->STAT_execution_time = dieBKE->Expected_finish_time - Simulator->Time(); tr->STAT_array_start_time = Simulator->Time();  // on-chip: stamp exact array-op start
 				}
 				chipBKE->OngoingDieCMDTransfers.pop();
 				chipBKE->No_of_active_dies++;
@@ -632,6 +632,7 @@ namespace SSD_Components {
 			this, dieBKE, (int)NVDDR2_SimEventType::READ_DATA_TRANSFERRED);
 
 		tr->STAT_transfer_time += NVDDR2DataOutTransferTime(tr->Data_and_metadata_size_in_byte, channels[tr->Address.ChannelID]);
+		tr->STAT_dataout_transfer_time += NVDDR2DataOutTransferTime(tr->Data_and_metadata_size_in_byte, channels[tr->Address.ChannelID]);  // on-chip: split out the post-array data-out portion
 		channels[tr->Address.ChannelID]->SetStatus(BusChannelStatus::BUSY, channels[tr->Address.ChannelID]->Chips[tr->Address.ChipID]);
 	}
 

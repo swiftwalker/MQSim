@@ -3,10 +3,14 @@
 #include <ctime>
 #include <string>
 #include <cstring>
+#include <sstream>
+#include <vector>
 #include "ssd/SSD_Defs.h"
 #include "exec/Execution_Parameter_Set.h"
 #include "exec/SSD_Device.h"
 #include "exec/Host_System.h"
+#include "exec/IO_Flow_Parameter_Set.h"
+#include "ssd/Host_Interface_Direct.h"   // 直注入(direct)接口 + Direct_Request
 #include "utils/rapidxml/rapidxml.hpp"
 #include "utils/DistributionTypes.h"
 
@@ -257,6 +261,85 @@ void print_help()
 		"./MQSim [-i path/to/config/file] [-w path/to/workload/file]" << endl;
 }
 
+// ================= 直注入(DIRECT)独立运行支持 =================
+// 打完补丁后 MQSim 本体自带 Host_Interface_Direct;下面让 standalone 的 main 也能
+// 驱动它:不建 Host_System,读一个极简 direct-trace,按 arrival 注入介质子系统。
+
+template<class T> static T* direct_iota_ids(int n) {
+	T* a = new T[n > 0 ? n : 1];
+	for (int i = 0; i < n; i++) a[i] = (T)i;
+	return a;
+}
+
+// 造一个覆盖整设备的 flow(仅供 SSD_Device 的 LSA 分区/资源分配用,DIRECT 下不执行)。
+static IO_Flow_Parameter_Set* build_direct_flow(Device_Parameter_Set& dev) {
+	IO_Flow_Parameter_Set_Trace_Based* fp = new IO_Flow_Parameter_Set_Trace_Based();
+	fp->Priority_Class = IO_Flow_Priority_Class::HIGH;
+	fp->Device_Level_Data_Caching_Mode = SSD_Components::Caching_Mode::TURNED_OFF;
+	fp->Initial_Occupancy_Percentage = 0;
+	fp->Channel_No = (int)dev.Flash_Channel_Count;
+	fp->Channel_IDs = direct_iota_ids<flash_channel_ID_type>(fp->Channel_No);
+	fp->Chip_No = (int)dev.Chip_No_Per_Channel;
+	fp->Chip_IDs = direct_iota_ids<flash_chip_ID_type>(fp->Chip_No);
+	fp->Die_No = (int)dev.Flash_Parameters.Die_No_Per_Chip;
+	fp->Die_IDs = direct_iota_ids<flash_die_ID_type>(fp->Die_No);
+	fp->Plane_No = (int)dev.Flash_Parameters.Plane_No_Per_Die;
+	fp->Plane_IDs = direct_iota_ids<flash_plane_ID_type>(fp->Plane_No);
+	return fp;
+}
+
+// 读极简 direct-trace:每行 `arrival_ns lba size_sectors R|W`(# 开头或空行忽略)。
+static std::vector<SSD_Components::Direct_Request> read_direct_trace(const std::string& path) {
+	std::vector<SSD_Components::Direct_Request> reqs;
+	std::ifstream f(path.c_str());
+	if (!f) { PRINT_MESSAGE("Direct workload trace not found: " << path) return reqs; }
+	std::string line;
+	while (std::getline(f, line)) {
+		if (line.empty() || line[0] == '#') continue;
+		std::istringstream ss(line);
+		unsigned long long arrival = 0, lba = 0; unsigned int size = 0; std::string op;
+		if (!(ss >> arrival >> lba >> size >> op)) continue;
+		SSD_Components::Direct_Request r;
+		r.arrival_ns = (sim_time_type)arrival;
+		r.lba = (LHA_type)lba;
+		r.size_sectors = size;
+		r.is_read = (op == "R" || op == "r" || op == "0");
+		reqs.push_back(r);
+	}
+	return reqs;
+}
+
+// DIRECT 独立运行:构造 SSD_Device(内部建 Host_Interface_Direct,不建 Host_System)、
+// 喂 workload、跑、打印结果。
+static void run_direct_scenario(Execution_Parameter_Set* exec_params, const std::string& workload_path) {
+	Simulator->Reset();
+	exec_params->Host_Configuration.IO_Flow_Definitions.clear();
+	exec_params->Host_Configuration.IO_Flow_Definitions.push_back(
+		build_direct_flow(exec_params->SSD_Device_Configuration));
+
+	SSD_Device ssd(&exec_params->SSD_Device_Configuration, &exec_params->Host_Configuration.IO_Flow_Definitions);
+	SSD_Components::Host_Interface_Direct* hi =
+		dynamic_cast<SSD_Components::Host_Interface_Direct*>(ssd.Host_interface);
+	if (hi == NULL) { PRINT_MESSAGE("DIRECT: Host_Interface_Direct not constructed; check HostInterface_Type.") return; }
+
+	std::vector<SSD_Components::Direct_Request> reqs = read_direct_trace(workload_path);
+	PRINT_MESSAGE("DIRECT: loaded " << reqs.size() << " requests from " << workload_path)
+	hi->Set_workload(&reqs);
+
+	Simulator->Start_simulation();
+
+	uint32_t gen = hi->Get_generated_request_count();
+	uint32_t serv = hi->Get_serviced_request_count();
+	uint32_t n = hi->Get_latency_sample_count();
+	double avg_us = n ? (double)hi->Get_sum_request_latency() / n / SIM_TIME_TO_MICROSECONDS_COEFF : 0.0;
+	double min_us = (double)hi->Get_min_request_latency() / SIM_TIME_TO_MICROSECONDS_COEFF;
+	double max_us = (double)hi->Get_max_request_latency() / SIM_TIME_TO_MICROSECONDS_COEFF;
+	std::cout << "==== DIRECT run ====" << std::endl
+	          << "generated=" << gen << "  serviced=" << serv << std::endl
+	          << "request latency (us): avg=" << avg_us << "  min=" << min_us << "  max=" << max_us << std::endl
+	          << "sim time (ns): " << Simulator->Time() << std::endl;
+}
+
 int main(int argc, char* argv[])
 {
 	string ssd_config_file_path, workload_defs_file_path;
@@ -270,6 +353,13 @@ int main(int argc, char* argv[])
 
 	Execution_Parameter_Set* exec_params = new Execution_Parameter_Set;
 	read_configuration_parameters(ssd_config_file_path, exec_params);
+
+	// 直注入(DIRECT)模式:不建 Host_System,直接读 direct-trace 喂 Host_Interface_Direct。
+	if (exec_params->SSD_Device_Configuration.HostInterface_Type == HostInterface_Types::DIRECT) {
+		run_direct_scenario(exec_params, workload_defs_file_path);
+		return 0;
+	}
+
 	std::vector<std::vector<IO_Flow_Parameter_Set*>*>* io_scenarios = read_workload_definitions(workload_defs_file_path);
 
 	int cntr = 1;

@@ -5,7 +5,7 @@
 #include <string>
 #include "Host_Interface_NVMe_Priorities.h"
 
-enum class HostInterface_Types { SATA, NVME };
+enum class HostInterface_Types { SATA, NVME, DIRECT };
 
 #define NVME_FLUSH_OPCODE 0x0000
 #define NVME_WRITE_OPCODE 0x0001

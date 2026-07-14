@@ -3,6 +3,9 @@
 
 namespace SSD_Components
 {
+	// 逐事务日志钩子(声明见 Host_Interface_Base.h)。除非上层装上收集器,否则为 null。
+	void (*Direct_TxLog_Hook)(NVM_Transaction*) = nullptr;
+
 	Input_Stream_Base::Input_Stream_Base() :
 		STAT_number_of_read_requests(0), STAT_number_of_write_requests(0), 
 		STAT_number_of_read_transactions(0), STAT_number_of_write_transactions(0),
@@ -114,6 +117,7 @@ namespace SSD_Components
 			default:
 				break;
 		}
+		if (Direct_TxLog_Hook != nullptr) Direct_TxLog_Hook(transaction);
 	}
 
 	uint32_t Input_Stream_Manager_Base::Get_average_read_transaction_turnaround_time(stream_id_type stream_id)//in microseconds
