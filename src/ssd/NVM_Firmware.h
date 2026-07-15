@@ -14,6 +14,7 @@ namespace SSD_Components
 	{
 	public:
 		NVM_Firmware(const sim_object_id_type& id, Data_Cache_Manager_Base* data_cache_manager);
+		virtual ~NVM_Firmware() {}
 		void Validate_simulation_config();
 		Data_Cache_Manager_Base* Data_cache_manager;
 		virtual LPA_type Convert_host_logical_address_to_device_address(LHA_type lha) = 0;
