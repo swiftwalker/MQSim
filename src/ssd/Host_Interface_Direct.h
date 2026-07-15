@@ -61,6 +61,8 @@ public:
     void Handle_new_arrived_request(User_Request* request);
     void Handle_arrived_write_data(User_Request* request);
     void Handle_serviced_request(User_Request* request);
+    // 取流 0 的可寻址扇区闭区间 [start, end](单流模型下 workload 校验用)。
+    void Get_stream0_range(LHA_type& start, LHA_type& end);
 private:
     void segment_user_request(User_Request* user_request);
 };
@@ -110,6 +112,7 @@ private:
     // 按 arrival 注入,但把并发上限卡在 io_queue_depth(仿真真实器件的 IO 队列)。
     // 无界在飞会让大量写并发命中同一 LPA、破坏 GC 期 FTL 的 LPA 锁;到期但被满队列
     // 挡住的请求,会在完成腾出槽位后再注入(背压)。
+    void validate_workload();            // 注入前一次性校验(零长/越界/跨界报错中止)
     void try_inject_due();               // 队列有空位时,注入所有到期请求
     void schedule_event(sim_time_type when);  // 最多只排一个注入/泵事件
     void arm_next_event();               // 队列有空位时,排下一个未来到达

@@ -64,6 +64,10 @@ namespace Host_Components
 					new_pcie_message->Payload = sata_hba->Read_ncq_entry(address);
 					new_pcie_message->Payload_size = sizeof(Submission_Queue_Entry);
 					break;
+				case HostInterface_Types::DIRECT:
+					// DIRECT 不构造 PCIe 路径;真到达即为逻辑错误。
+					PRINT_ERROR("PCIe_Root_Complex reached in DIRECT mode (no PCIe expected).")
+					break;
 			}
 		}
 

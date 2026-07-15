@@ -427,6 +427,10 @@ IO_Flow_Base::IO_Flow_Base(const sim_object_id_type &name, uint16_t flow_id, LHA
 				request->Source_flow_id = flow_id;
 				sata_hba->Submit_io_request(request);
 				break;
+			case HostInterface_Types::DIRECT:
+				// DIRECT 不构造 Host_System / IO_Flow,正常不会走到这里;真到达即为逻辑错误。
+				PRINT_ERROR("IO_Flow_Base::Submit_io_request reached in DIRECT mode (no host stack expected).")
+				break;
 		}
 	}
 

@@ -42,6 +42,12 @@ void Input_Stream_Manager_Direct::Handle_arrived_write_data(User_Request* reques
     // 直注入路径不使用(写在 Handle_new_arrived_request 里已分段)。
 }
 
+void Input_Stream_Manager_Direct::Get_stream0_range(LHA_type& start, LHA_type& end) {
+    Input_Stream_Direct* s = (Input_Stream_Direct*)input_streams[0];
+    start = s->Start_logical_sector_address;
+    end = s->End_logical_sector_address;
+}
+
 void Input_Stream_Manager_Direct::Handle_serviced_request(User_Request* request) {
     Input_Stream_Direct* stream = (Input_Stream_Direct*)input_streams[request->Stream_id];
     stream->Waiting_user_requests.remove(request);
@@ -68,11 +74,7 @@ void Input_Stream_Manager_Direct::segment_user_request(User_Request* user_reques
     unsigned int transaction_size = 0;
     Input_Stream_Direct* stream = (Input_Stream_Direct*)input_streams[user_request->Stream_id];
     while (handled_sectors_count < req_size) {
-        // 把 LSA 限制在分给该流的区间内。
-        if (lsa < stream->Start_logical_sector_address || lsa > stream->End_logical_sector_address) {
-            lsa = stream->Start_logical_sector_address
-                + (lsa % (stream->End_logical_sector_address - stream->Start_logical_sector_address));
-        }
+        // 请求已在 validate_workload() 里校验过落在流区间内(不再静默取模改写地址)。
         LHA_type internal_lsa = lsa - stream->Start_logical_sector_address;
 
         transaction_size = host_interface->Get_no_of_LHAs_in_an_NVM_write_unit()
@@ -115,6 +117,13 @@ Host_Interface_Direct::Host_Interface_Direct(const sim_object_id_type& id,
                           sectors_per_page, cache),
       no_of_input_streams(no_of_input_streams),
       io_queue_depth(io_queue_depth > 0 ? io_queue_depth : 1) {
+    // 直注入当前是单请求者模型:所有请求固定进流 0(见 inject_one)。这里强制单流,
+    // 避免"表面支持多流、实则流 1+ 永远收不到请求、io_queue_depth 也是全局而非每流"的
+    // 误导。若将来要真多流,需给 Direct_Request 加 stream_id/priority 并维护每流队列深度。
+    if (no_of_input_streams != 1) {
+        PRINT_ERROR("Direct host interface currently supports exactly one input stream (got "
+                    << no_of_input_streams << "). Configure a single IO flow for DIRECT mode.")
+    }
     this->input_stream_manager = new Input_Stream_Manager_Direct(this);
     this->request_fetch_unit = new Request_Fetch_Unit_Direct(this);
 }
@@ -127,8 +136,17 @@ void Host_Interface_Direct::Start_simulation() {
             Utils::Logical_Address_Partitioning_Unit::Start_lha_available_to_flow((stream_id_type)i),
             Utils::Logical_Address_Partitioning_Unit::End_lha_available_to_flow((stream_id_type)i));
     }
-    // 启动注入:先灌入所有已到期请求,再排下一个未来到达。
-    try_inject_due();
+    // 注入前统一校验整个 workload(越界/零长在此处一次性报错中止,而不是运行到一半再崩,
+    // 也不静默改写踪迹地址)。校验通过后 segment 阶段可假定所有 LSA 均落在流区间内。
+    validate_workload();
+
+    // 启动注入:只登记第一个注入事件,不在此处同步注入。
+    // 原因(修复注入时序竞争):Engine::Start_simulation() 先对所有 Sim_Object 依次调
+    // Start_simulation(),全部返回后才进入事件循环;而对象遍历用 unordered_map,顺序不确定。
+    // 若在这里同步 try_inject_due(),到达时刻已过(如 arrival_ns=0)的请求会立即进 FTL,
+    // 可能抢在 AddressMappingUnit::Start_simulation()(内部 Store_mapping_table_on_flash_at_start)
+    // 之前,污染初始映射并改变时延。改为只 arm 事件:首个注入被推迟到事件循环(t≥now+1),
+    // 此时所有组件的 Start_simulation() 均已完成,注入顺序确定。
     arm_next_event();
 }
 
@@ -157,6 +175,28 @@ void Host_Interface_Direct::inject_one() {
     in_flight++;
     cursor++;
     ((Input_Stream_Manager_Direct*)input_stream_manager)->Handle_new_arrived_request(request);
+}
+
+// 注入前一次性校验整个 workload:零长请求、越界 LBA、跨界(lba+size 超出可寻址范围)都在
+// 这里报错中止,绝不静默改写地址。单流模型下所有请求都进流 0,故用流 0 的 [start,end] 作为
+// 可寻址闭区间。
+void Host_Interface_Direct::validate_workload() {
+    if (workload == nullptr) return;
+    LHA_type lo = 0, hi = 0;
+    ((Input_Stream_Manager_Direct*)input_stream_manager)->Get_stream0_range(lo, hi);
+    for (std::size_t i = 0; i < workload->size(); i++) {
+        const Direct_Request& r = (*workload)[i];
+        if (r.size_sectors == 0)
+            PRINT_ERROR("Direct workload request #" << i << " has zero size (size_sectors must be > 0).")
+        if ((LHA_type)r.lba < lo || (LHA_type)r.lba > hi)
+            PRINT_ERROR("Direct workload request #" << i << " LBA " << r.lba
+                        << " is outside the addressable sector range [" << lo << ", " << hi << "].")
+        // 溢出安全的 (lba + size - 1) <= hi:等价写成 (size - 1) <= (hi - lba),避免 lba+size 溢出。
+        if ((LHA_type)(r.size_sectors - 1) > hi - (LHA_type)r.lba)
+            PRINT_ERROR("Direct workload request #" << i << " spans ["
+                        << r.lba << ", " << (r.lba + r.size_sectors - 1)
+                        << "] which exceeds the addressable sector range [" << lo << ", " << hi << "].")
+    }
 }
 
 // 在飞队列有空位时,注入所有到达时间已过的请求。并发上限卡在 io_queue_depth(器件队列

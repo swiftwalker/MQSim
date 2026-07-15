@@ -5,6 +5,8 @@
 #include <cstring>
 #include <sstream>
 #include <vector>
+#include <stdexcept>
+#include <exception>
 #include "ssd/SSD_Defs.h"
 #include "exec/Execution_Parameter_Set.h"
 #include "exec/SSD_Device.h"
@@ -272,11 +274,13 @@ template<class T> static T* direct_iota_ids(int n) {
 }
 
 // 造一个覆盖整设备的 flow(仅供 SSD_Device 的 LSA 分区/资源分配用,DIRECT 下不执行)。
-static IO_Flow_Parameter_Set* build_direct_flow(Device_Parameter_Set& dev) {
+// initial_occupancy_pct:初始占用率透传(而非埋死 0)。仅在预处理(preconditioning)启用时才
+// 有意义;DIRECT 目前不支持预处理(见 run_direct_scenario 的 fail-loud 守卫),故实际恒传 0。
+static IO_Flow_Parameter_Set* build_direct_flow(Device_Parameter_Set& dev, unsigned int initial_occupancy_pct) {
 	IO_Flow_Parameter_Set_Trace_Based* fp = new IO_Flow_Parameter_Set_Trace_Based();
 	fp->Priority_Class = IO_Flow_Priority_Class::HIGH;
 	fp->Device_Level_Data_Caching_Mode = SSD_Components::Caching_Mode::TURNED_OFF;
-	fp->Initial_Occupancy_Percentage = 0;
+	fp->Initial_Occupancy_Percentage = initial_occupancy_pct;
 	fp->Channel_No = (int)dev.Flash_Channel_Count;
 	fp->Channel_IDs = direct_iota_ids<flash_channel_ID_type>(fp->Channel_No);
 	fp->Chip_No = (int)dev.Chip_No_Per_Channel;
@@ -288,23 +292,68 @@ static IO_Flow_Parameter_Set* build_direct_flow(Device_Parameter_Set& dev) {
 	return fp;
 }
 
-// 读极简 direct-trace:每行 `arrival_ns lba size_sectors R|W`(# 开头或空行忽略)。
+// 读极简 direct-trace:每行 `arrival_ns lba size_sectors op`,op 仅接受 R/r(读)或 W/w(写)。
+// # 开头或空行忽略。严格校验:文件必须存在;每条数据行必须恰好 4 个字段;op 必须是 R/W;
+// size_sectors 必须 > 0;arrival_ns 必须单调非减;数值不得溢出目标类型。任一违反 → 报行号并抛错
+// 中止(绝不静默跳过坏行或静默改变请求语义)。刻意不接受数字 op(避免与 MQSim 传统 trace 的
+// 0=write/1=read 约定混淆)。
 static std::vector<SSD_Components::Direct_Request> read_direct_trace(const std::string& path) {
 	std::vector<SSD_Components::Direct_Request> reqs;
 	std::ifstream f(path.c_str());
-	if (!f) { PRINT_MESSAGE("Direct workload trace not found: " << path) return reqs; }
+	if (!f) {
+		PRINT_ERROR("Direct workload trace not found or unreadable: " << path)
+	}
 	std::string line;
+	unsigned long long line_no = 0;
+	bool have_prev = false;
+	unsigned long long prev_arrival = 0;
 	while (std::getline(f, line)) {
-		if (line.empty() || line[0] == '#') continue;
+		line_no++;
+		// 去掉行首空白后判断注释/空行。
+		std::size_t first = line.find_first_not_of(" \t\r\n");
+		if (first == std::string::npos || line[first] == '#') continue;
+
 		std::istringstream ss(line);
-		unsigned long long arrival = 0, lba = 0; unsigned int size = 0; std::string op;
-		if (!(ss >> arrival >> lba >> size >> op)) continue;
+		unsigned long long arrival = 0, lba = 0, size = 0;
+		std::string op, extra;
+		if (!(ss >> arrival >> lba >> size >> op)) {
+			PRINT_ERROR("Direct trace " << path << ":" << line_no
+				<< ": expected `arrival_ns lba size_sectors op(R|W)`, got: " << line)
+		}
+		if (ss >> extra) {
+			PRINT_ERROR("Direct trace " << path << ":" << line_no
+				<< ": too many fields (expected exactly 4), extra: " << extra)
+		}
+		bool is_read;
+		if (op == "R" || op == "r")      is_read = true;
+		else if (op == "W" || op == "w") is_read = false;
+		else {
+			PRINT_ERROR("Direct trace " << path << ":" << line_no
+				<< ": op must be R/r or W/w, got: " << op)
+		}
+		if (size == 0) {
+			PRINT_ERROR("Direct trace " << path << ":" << line_no << ": size_sectors must be > 0.")
+		}
+		if (size > 0xffffffffULL) {
+			PRINT_ERROR("Direct trace " << path << ":" << line_no << ": size_sectors overflows 32-bit.")
+		}
+		if (have_prev && arrival < prev_arrival) {
+			PRINT_ERROR("Direct trace " << path << ":" << line_no
+				<< ": arrival_ns must be monotonically non-decreasing (" << arrival
+				<< " < previous " << prev_arrival << ").")
+		}
+		prev_arrival = arrival;
+		have_prev = true;
+
 		SSD_Components::Direct_Request r;
 		r.arrival_ns = (sim_time_type)arrival;
 		r.lba = (LHA_type)lba;
-		r.size_sectors = size;
-		r.is_read = (op == "R" || op == "r" || op == "0");
+		r.size_sectors = (unsigned int)size;
+		r.is_read = is_read;
 		reqs.push_back(r);
+	}
+	if (reqs.empty()) {
+		PRINT_ERROR("Direct trace " << path << ": no requests parsed (empty workload).")
 	}
 	return reqs;
 }
@@ -313,9 +362,20 @@ static std::vector<SSD_Components::Direct_Request> read_direct_trace(const std::
 // 喂 workload、跑、打印结果。
 static void run_direct_scenario(Execution_Parameter_Set* exec_params, const std::string& workload_path) {
 	Simulator->Reset();
+
+	// Fail-loud:DIRECT 目前不做预处理(不调 Perform_preconditioning)。若配置要求预处理却静默
+	// 从全新闪存状态开始,会让初始有效/无效页分布、GC/WL 稳态、写放大和尾延迟都失真,也无法与
+	// 传统 MQSim 场景等价对比。因此这里显式报错,而不是静默忽略配置。
+	if (exec_params->SSD_Device_Configuration.Enabled_Preconditioning) {
+		PRINT_ERROR("DIRECT mode does not support preconditioning yet. "
+			"Set <Enabled_Preconditioning>false</Enabled_Preconditioning>, or use the NVMe host "
+			"interface if you need a preconditioned device.")
+	}
+
 	exec_params->Host_Configuration.IO_Flow_Definitions.clear();
+	// 占用率透传:预处理已被上面挡掉,设备从空盘起,初始占用率必须为 0。
 	exec_params->Host_Configuration.IO_Flow_Definitions.push_back(
-		build_direct_flow(exec_params->SSD_Device_Configuration));
+		build_direct_flow(exec_params->SSD_Device_Configuration, /*initial_occupancy_pct=*/0));
 
 	SSD_Device ssd(&exec_params->SSD_Device_Configuration, &exec_params->Host_Configuration.IO_Flow_Definitions);
 	SSD_Components::Host_Interface_Direct* hi =
@@ -355,8 +415,14 @@ int main(int argc, char* argv[])
 	read_configuration_parameters(ssd_config_file_path, exec_params);
 
 	// 直注入(DIRECT)模式:不建 Host_System,直接读 direct-trace 喂 Host_Interface_Direct。
+	// 配置/踪迹校验失败会抛异常;在此捕获,打印清晰错误并以非零码干净退出(而非未捕获异常 abort)。
 	if (exec_params->SSD_Device_Configuration.HostInterface_Type == HostInterface_Types::DIRECT) {
-		run_direct_scenario(exec_params, workload_defs_file_path);
+		try {
+			run_direct_scenario(exec_params, workload_defs_file_path);
+		} catch (const std::exception& e) {
+			std::cerr << "DIRECT run failed: " << e.what() << std::endl;
+			return 1;
+		}
 		return 0;
 	}
 
