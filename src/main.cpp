@@ -372,6 +372,13 @@ static void run_direct_scenario(Execution_Parameter_Set* exec_params, const std:
 			"interface if you need a preconditioned device.")
 	}
 
+	// 先读并校验 direct-trace,再构造 SSD_Device:这样 trace 的格式/排序/越界等错误抛出时,栈上
+	// 尚无 SSD_Device,异常可干净展开到 main 的 catch 并打印错误,不会经过 SSD_Device 的析构路径。
+	// (注入期的 workload 校验仍在 Start_simulation 内、SSD_Device 存活时发生,依赖基类虚析构
+	// 保证栈展开安全。)
+	std::vector<SSD_Components::Direct_Request> reqs = read_direct_trace(workload_path);
+	PRINT_MESSAGE("DIRECT: loaded " << reqs.size() << " requests from " << workload_path)
+
 	exec_params->Host_Configuration.IO_Flow_Definitions.clear();
 	// 占用率透传:预处理已被上面挡掉,设备从空盘起,初始占用率必须为 0。
 	exec_params->Host_Configuration.IO_Flow_Definitions.push_back(
@@ -382,8 +389,6 @@ static void run_direct_scenario(Execution_Parameter_Set* exec_params, const std:
 		dynamic_cast<SSD_Components::Host_Interface_Direct*>(ssd.Host_interface);
 	if (hi == NULL) { PRINT_MESSAGE("DIRECT: Host_Interface_Direct not constructed; check HostInterface_Type.") return; }
 
-	std::vector<SSD_Components::Direct_Request> reqs = read_direct_trace(workload_path);
-	PRINT_MESSAGE("DIRECT: loaded " << reqs.size() << " requests from " << workload_path)
 	hi->Set_workload(&reqs);
 
 	Simulator->Start_simulation();
