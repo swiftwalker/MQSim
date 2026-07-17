@@ -431,6 +431,10 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 
+	// 与 DIRECT 分支一致:给传统 NVMe/SATA 路径也套一层顶层 catch。PRINT_ERROR 现在抛异常
+	// (嵌入安全),若不捕获,配置/负载错误会未捕获 terminate(abort 134)而非干净退出;这里
+	// 统一成打印错误 + 返回码 1。(注:更彻底的做法是可切换的 error handler,而非全局宏语义变更。)
+	try {
 	std::vector<std::vector<IO_Flow_Parameter_Set*>*>* io_scenarios = read_workload_definitions(workload_defs_file_path);
 
 	int cntr = 1;
@@ -465,6 +469,10 @@ int main(int argc, char* argv[])
 
 		PRINT_MESSAGE("Writing results to output file .......");
 		collect_results(ssd, host, (workload_defs_file_path.substr(0, workload_defs_file_path.find_last_of(".")) + "_scenario_" + std::to_string(cntr) + ".xml").c_str());
+	}
+	} catch (const std::exception& e) {
+		std::cerr << "MQSim run failed: " << e.what() << std::endl;
+		return 1;
 	}
     cout << "Simulation complete; Press any key to exit." << endl;
 
