@@ -396,12 +396,19 @@ static void run_direct_scenario(Execution_Parameter_Set* exec_params, const std:
 	uint32_t gen = hi->Get_generated_request_count();
 	uint32_t serv = hi->Get_serviced_request_count();
 	uint32_t n = hi->Get_latency_sample_count();
-	double avg_us = n ? (double)hi->Get_sum_request_latency() / n / SIM_TIME_TO_MICROSECONDS_COEFF : 0.0;
-	double min_us = (double)hi->Get_min_request_latency() / SIM_TIME_TO_MICROSECONDS_COEFF;
-	double max_us = (double)hi->Get_max_request_latency() / SIM_TIME_TO_MICROSECONDS_COEFF;
+	double c = SIM_TIME_TO_MICROSECONDS_COEFF;
+	// admission→completion:纯器件内服务时间(不含 IO 队列背压等待)
+	double adm_avg = n ? (double)hi->Get_sum_request_latency() / n / c : 0.0;
+	double adm_min = (double)hi->Get_min_request_latency() / c;
+	double adm_max = (double)hi->Get_max_request_latency() / c;
+	// arrival→completion:端到端延迟(含背压等待)。队列不饱和时两者相等。
+	double arr_avg = n ? (double)hi->Get_sum_arrival_latency() / n / c : 0.0;
+	double arr_min = (double)hi->Get_min_arrival_latency() / c;
+	double arr_max = (double)hi->Get_max_arrival_latency() / c;
 	std::cout << "==== DIRECT run ====" << std::endl
 	          << "generated=" << gen << "  serviced=" << serv << std::endl
-	          << "request latency (us): avg=" << avg_us << "  min=" << min_us << "  max=" << max_us << std::endl
+	          << "admission->completion latency (us): avg=" << adm_avg << "  min=" << adm_min << "  max=" << adm_max << std::endl
+	          << "arrival->completion   latency (us): avg=" << arr_avg << "  min=" << arr_min << "  max=" << arr_max << std::endl
 	          << "sim time (ns): " << Simulator->Time() << std::endl;
 }
 

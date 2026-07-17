@@ -19,6 +19,7 @@
 #include <list>
 #include <vector>
 #include <cstdint>
+#include <unordered_map>
 
 #include "Host_Interface_Base.h"
 #include "User_Request.h"
@@ -96,17 +97,22 @@ public:
     void Execute_simulator_event(MQSimEngine::Sim_Event*);
     void Report_results_in_XML(std::string name_prefix, Utils::XmlWriter& xmlwriter);
 
-    // 结果访问器(供 standalone 打印 / adapter 收集)。
+    // 结果访问器(供 standalone 打印 / adapter 收集)。样本数对两种口径相同(每笔完成各计一次)。
     uint32_t Get_generated_request_count() { return generated_count; }
     uint32_t Get_serviced_request_count()  { return serviced_count; }
     uint32_t Get_latency_sample_count()    { return lat_count; }
+    // admission→completion:入场(离开 IO 队列进入介质)到完成 —— 纯器件内服务时间,不含队列背压等待。
     sim_time_type Get_sum_request_latency() { return lat_sum; }   // sim ns
     sim_time_type Get_min_request_latency() { return lat_min_set ? lat_min : 0; }
     sim_time_type Get_max_request_latency() { return lat_max; }
+    // arrival→completion:按 trace 到达时刻到完成 —— 端到端延迟,含 io_queue_depth 满时的背压等待。
+    sim_time_type Get_sum_arrival_latency() { return arr_lat_sum; }
+    sim_time_type Get_min_arrival_latency() { return arr_lat_min_set ? arr_lat_min : 0; }
+    sim_time_type Get_max_arrival_latency() { return arr_lat_max; }
 
     // 由流管理器在到达/完成时调用(让派生类访问基类的 broadcast 辅助与延迟累加器)。
     void Notify_arrival(User_Request* request) { broadcast_user_request_arrival_signal(request); }
-    void Account_completion(sim_time_type latency, bool is_read);
+    void Account_completion(User_Request* request, bool is_read);
 
 private:
     // 按 arrival 注入,但把并发上限卡在 io_queue_depth(仿真真实器件的 IO 队列)。
@@ -126,10 +132,15 @@ private:
     bool event_pending = false;
     uint32_t generated_count = 0;
     uint32_t serviced_count = 0;
-    // 每请求器件内延迟(注入 -> 完成),以 sim ns 累计
+    // 每请求 admission→completion 延迟(入场 -> 完成),以 sim ns 累计
     sim_time_type lat_sum = 0, lat_min = 0, lat_max = 0;
     uint32_t lat_count = 0;
     bool lat_min_set = false;
+    // 每请求 arrival→completion 延迟(trace 到达 -> 完成),含背压等待;样本数复用 lat_count
+    sim_time_type arr_lat_sum = 0, arr_lat_min = 0, arr_lat_max = 0;
+    bool arr_lat_min_set = false;
+    // 记录每笔在飞请求的到达时刻(inject_one 写入,完成时读出并擦除);避免改动共享的 User_Request
+    std::unordered_map<User_Request*, sim_time_type> arrival_by_request;
 };
 
 }  // namespace SSD_Components

@@ -52,9 +52,9 @@ void Input_Stream_Manager_Direct::Handle_serviced_request(User_Request* request)
     Input_Stream_Direct* stream = (Input_Stream_Direct*)input_streams[request->Stream_id];
     stream->Waiting_user_requests.remove(request);
 
-    sim_time_type latency = Simulator->Time() - request->STAT_InitiationTime;
+    // 两种延迟口径都在 Account_completion 里算(admission→completion 与 arrival→completion)。
     ((Host_Interface_Direct*)host_interface)->Account_completion(
-        latency, request->Type == UserRequestType::READ);
+        request, request->Type == UserRequestType::READ);
 
     // 自定义清理(不用 DELETE_REQUEST_NVME):IO_command_info 里没有
     // Submission_Queue_Entry,且非集成模式下 Data 是借用指针。
@@ -168,7 +168,8 @@ void Host_Interface_Direct::inject_one() {
     request->Start_LBA = (LHA_type)r.lba;
     request->SizeInSectors = r.size_sectors;
     request->Size_in_byte = r.size_sectors * SECTOR_SIZE_IN_BYTE;
-    request->STAT_InitiationTime = Simulator->Time();
+    request->STAT_InitiationTime = Simulator->Time();   // 入场(admission)时刻
+    arrival_by_request[request] = r.arrival_ns;         // trace 到达时刻(≤ 入场;差值即背压等待)
     request->IO_command_info = NULL;             // 直注入路径无 NVMe SQE
     request->Data = NULL;
     generated_count++;
@@ -233,13 +234,29 @@ void Host_Interface_Direct::Execute_simulator_event(MQSimEngine::Sim_Event* /*ev
     arm_next_event();
 }
 
-void Host_Interface_Direct::Account_completion(sim_time_type latency, bool /*is_read*/) {
+void Host_Interface_Direct::Account_completion(User_Request* request, bool /*is_read*/) {
     serviced_count++;
     if (in_flight > 0) in_flight--;
-    lat_sum += latency;
+    sim_time_type now = Simulator->Time();
+
+    // (1) admission→completion:入场到完成,纯器件内服务时间(不含 IO 队列背压等待)。
+    sim_time_type adm = now - request->STAT_InitiationTime;
+    lat_sum += adm;
     lat_count++;
-    if (!lat_min_set || latency < lat_min) { lat_min = latency; lat_min_set = true; }
-    if (latency > lat_max) lat_max = latency;
+    if (!lat_min_set || adm < lat_min) { lat_min = adm; lat_min_set = true; }
+    if (adm > lat_max) lat_max = adm;
+
+    // (2) arrival→completion:trace 到达到完成,端到端延迟(含背压等待)。map 缺失则回退为 adm。
+    sim_time_type arr = adm;
+    auto it = arrival_by_request.find(request);
+    if (it != arrival_by_request.end()) {
+        arr = now - it->second;
+        arrival_by_request.erase(it);
+    }
+    arr_lat_sum += arr;
+    if (!arr_lat_min_set || arr < arr_lat_min) { arr_lat_min = arr; arr_lat_min_set = true; }
+    if (arr > arr_lat_max) arr_lat_max = arr;
+
     // 不要在这里注入:此处运行在事务完成回调内,重入 FTL/AMU 派发会破坏状态。改为排一个
     // 新的泵事件,让腾出的槽位从 Execute_simulator_event 里被填。
     if (workload != nullptr && cursor < workload->size())
