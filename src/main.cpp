@@ -424,7 +424,14 @@ int main(int argc, char* argv[])
 	command_line_args(argv, ssd_config_file_path, workload_defs_file_path);
 
 	Execution_Parameter_Set* exec_params = new Execution_Parameter_Set;
-	read_configuration_parameters(ssd_config_file_path, exec_params);
+	// 配置读取也要在 catch 内:坏 SSD 配置(如非法 <HostInterface_Type>)会从
+	// Execution_Parameter_Set::XML_deserialize 抛异常,不包住就是未捕获 terminate(abort 134)。
+	try {
+		read_configuration_parameters(ssd_config_file_path, exec_params);
+	} catch (const std::exception& e) {
+		std::cerr << "MQSim run failed (bad SSD configuration): " << e.what() << std::endl;
+		return 1;
+	}
 
 	// 直注入(DIRECT)模式:不建 Host_System,直接读 direct-trace 喂 Host_Interface_Direct。
 	// 配置/踪迹校验失败会抛异常;在此捕获,打印清晰错误并以非零码干净退出(而非未捕获异常 abort)。
